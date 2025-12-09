@@ -4,55 +4,68 @@ import {
   GetObjectCommand,
   ListBucketsCommand,
   ListObjectsV2Command,
+  PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import pdfParse from "pdf-parse";
 import { P, match } from "ts-pattern";
 import type { S3ObjectData } from "../types";
 
+export interface S3Config {
+  region?: string;
+  endpoint?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  buckets?: string[];
+  maxBuckets?: number;
+  forcePathStyle?: boolean;
+}
+
 export class S3Resource {
   private client: S3Client;
   private maxBuckets: number;
   private configuredBuckets: string[];
 
-  constructor(region = "us-east-1", maxBuckets?: number) {
+  constructor(config: S3Config = {}) {
     // S3 client configuration options
     const clientOptions: S3ClientConfig = {
-      region: process.env.AWS_REGION || region,
+      region: config.region || process.env.AWS_REGION || "us-east-1",
     };
 
-    // Set credentials if provided in environment variables
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    // Set credentials - prioritize config over environment variables
+    const accessKeyId = config.accessKeyId || process.env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = config.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY;
+
+    if (accessKeyId && secretAccessKey) {
       clientOptions.credentials = {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        accessKeyId,
+        secretAccessKey,
       };
     }
 
-    // Custom endpoint configuration for MinIO
-    if (process.env.AWS_ENDPOINT) {
-      clientOptions.endpoint = process.env.AWS_ENDPOINT;
+    // Custom endpoint configuration (for MinIO, CloudFlare R2, etc.)
+    const endpoint = config.endpoint || process.env.AWS_ENDPOINT;
+    if (endpoint) {
+      clientOptions.endpoint = endpoint;
     }
 
-    // Path style URL setting (required for MinIO)
-    if (process.env.AWS_S3_FORCE_PATH_STYLE === "true") {
+    // Path style URL setting (required for MinIO and some S3-compatible services)
+    const forcePathStyle = config.forcePathStyle ?? (process.env.AWS_S3_FORCE_PATH_STYLE === "true");
+    if (forcePathStyle) {
       clientOptions.forcePathStyle = true;
     }
 
     this.client = new S3Client(clientOptions);
 
-    // Get maxBuckets from environment variable if not explicitly provided
-    if (maxBuckets !== undefined) {
-      this.maxBuckets = maxBuckets;
-    } else {
-      const envMaxBuckets = process.env.S3_MAX_BUCKETS;
-      this.maxBuckets = envMaxBuckets ? Number.parseInt(envMaxBuckets, 10) : 5;
-    }
+    // Get maxBuckets - prioritize config over environment variable
+    this.maxBuckets = config.maxBuckets ?? 
+      (process.env.S3_MAX_BUCKETS ? Number.parseInt(process.env.S3_MAX_BUCKETS, 10) : 5);
 
-    this.configuredBuckets = this.getConfiguredBuckets();
+    // Get configured buckets - prioritize config over environment variable
+    this.configuredBuckets = config.buckets || this.getConfiguredBucketsFromEnv();
   }
 
-  private getConfiguredBuckets(): string[] {
+  private getConfiguredBucketsFromEnv(): string[] {
     // Get bucket information from environment variables
     const bucketsEnv = process.env.S3_BUCKETS || "";
     return bucketsEnv.split(",").filter((bucket) => bucket.trim() !== "");
@@ -240,5 +253,74 @@ export class S3Resource {
       this.logError("Error converting PDF to text:", error);
       return "Error: Could not extract text from PDF file.";
     }
+  }
+
+  // Upload an object to a bucket
+  async putObject(
+    bucketName: string,
+    key: string,
+    content: string | Buffer,
+    contentType?: string,
+  ): Promise<void> {
+    try {
+      // Use pattern matching to check bucket accessibility
+      await match({
+        hasConfiguredBuckets: this.configuredBuckets.length > 0,
+        isAllowed: this.configuredBuckets.includes(bucketName),
+      })
+        .with({ hasConfiguredBuckets: true, isAllowed: false }, () => {
+          throw new Error(`Bucket ${bucketName} is not in the allowed buckets list`);
+        })
+        .otherwise(() => Promise.resolve());
+
+      // Convert string to Buffer if needed
+      const body = typeof content === "string" ? Buffer.from(content, "utf-8") : content;
+
+      // Auto-detect content type if not provided
+      const detectedContentType = contentType || this.detectContentType(key);
+
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: body,
+        ContentType: detectedContentType,
+      });
+
+      await this.client.send(command);
+    } catch (error) {
+      this.logError(`Error putting object ${key} to bucket ${bucketName}:`, error);
+      throw error;
+    }
+  }
+
+  // Detect content type based on file extension
+  private detectContentType(key: string): string {
+    const extension = key.toLowerCase().split(".").pop() || "";
+
+    return match(extension)
+      .with("txt", () => "text/plain")
+      .with("json", () => "application/json")
+      .with("xml", () => "application/xml")
+      .with("html", "htm", () => "text/html")
+      .with("css", () => "text/css")
+      .with("js", "mjs", () => "application/javascript")
+      .with("ts", () => "application/typescript")
+      .with("md", () => "text/markdown")
+      .with("csv", () => "text/csv")
+      .with("yml", "yaml", () => "application/x-yaml")
+      .with("pdf", () => "application/pdf")
+      .with("jpg", "jpeg", () => "image/jpeg")
+      .with("png", () => "image/png")
+      .with("gif", () => "image/gif")
+      .with("svg", () => "image/svg+xml")
+      .with("webp", () => "image/webp")
+      .with("mp4", () => "video/mp4")
+      .with("webm", () => "video/webm")
+      .with("mp3", () => "audio/mpeg")
+      .with("wav", () => "audio/wav")
+      .with("zip", () => "application/zip")
+      .with("tar", () => "application/x-tar")
+      .with("gz", () => "application/gzip")
+      .otherwise(() => "application/octet-stream");
   }
 }

@@ -5,6 +5,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import type { S3Config } from "../resources/s3.js";
+import { createServer } from "../server.js";
 import {
   createMockNodeRequest,
   createMockNodeResponse,
@@ -32,6 +34,12 @@ export class HttpTransport implements ITransport {
           "Accept",
           "x-mcp-session-id",
           "mcp-session-id",
+          "S3-Region",
+          "S3-Endpoint",
+          "S3-Access-Key-Id",
+          "S3-Secret-Access-Key",
+          "S3-Buckets",
+          "S3-Force-Path-Style",
         ],
       },
     };
@@ -75,7 +83,18 @@ export class HttpTransport implements ITransport {
 
         const effectiveSessionId =
           sessionId || req.headers["mcp-session-id"] || req.headers["x-mcp-session-id"];
-        const session = await this.getOrCreateSession(effectiveSessionId as string, server);
+        
+        // Extract S3 configuration from headers
+        const s3Config: S3Config = {
+          region: c.req.header("S3-Region"),
+          endpoint: c.req.header("S3-Endpoint"),
+          accessKeyId: c.req.header("S3-Access-Key-Id"),
+          secretAccessKey: c.req.header("S3-Secret-Access-Key"),
+          buckets: c.req.header("S3-Buckets")?.split(",").map(b => b.trim()),
+          forcePathStyle: c.req.header("S3-Force-Path-Style") === "true",
+        };
+
+        const session = await this.getOrCreateSession(effectiveSessionId as string, server, s3Config);
         const { response: res, getResponse } = createMockNodeResponse();
 
         await session.transport.handleRequest(req, res, parsedBody);
@@ -124,7 +143,7 @@ export class HttpTransport implements ITransport {
     });
   }
 
-  private async getOrCreateSession(sessionId?: string, server?: McpServer) {
+  private async getOrCreateSession(sessionId?: string, server?: McpServer, s3Config?: S3Config) {
     const id = sessionId || crypto.randomUUID();
 
     const existing = this.activeSessions.get(id);
@@ -141,11 +160,14 @@ export class HttpTransport implements ITransport {
       throw new Error("Server instance is required");
     }
 
-    const session = { transport, server };
+    // Create a new server instance with custom S3 config for this session
+    const sessionServer = s3Config ? createServer({ s3Config }) : server;
+
+    const session = { transport, server: sessionServer };
     this.activeSessions.set(id, session);
 
     try {
-      await server.connect(transport);
+      await sessionServer.connect(transport);
     } catch (error) {
       this.activeSessions.delete(id);
       throw error;

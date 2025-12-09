@@ -24,6 +24,7 @@ https://github.com/user-attachments/assets/d05ff0f1-e2bf-43b9-8d0c-82605abfb666
 - ✅ **list-buckets** - List accessible S3 buckets with filtering
 - ✅ **list-objects** - Browse objects within buckets with prefix filtering
 - ✅ **get-object** - Retrieve object contents (text/binary support)
+- ✅ **put-object** - Upload objects to S3 buckets (text/binary with base64 encoding)
 
 ### 🐳 Deployment Options
 
@@ -39,6 +40,7 @@ This MCP server allows Large Language Models (LLMs) like Claude to interact with
 - Listing available S3 buckets
 - Listing objects within a bucket
 - Retrieving object contents
+- Uploading objects to buckets (text and binary files)
 
 The server is built using TypeScript and the MCP SDK, providing a secure and standardized way for LLMs to interface with S3.
 
@@ -91,7 +93,49 @@ Or set these as environment variables.
 
 ## Configuration
 
-The server can be configured using the following environment variables:
+The server supports **two configuration methods**:
+
+### 1. HTTP Headers Configuration (Recommended for StreamableHTTP)
+
+Pass configuration via HTTP headers for multi-tenant and dynamic configuration support. Perfect for remote deployments and web-based MCP clients.
+
+**Example configuration:**
+
+```json
+{
+  "mcpServers": {
+    "aws-s3": {
+      "url": "http://localhost:3000/mcp",
+      "transport": "streamablehttp",
+      "headers": [
+        {"key": "S3-Region", "value": "auto"},
+        {"key": "S3-Endpoint", "value": "https://your-account.r2.cloudflarestorage.com"},
+        {"key": "S3-Access-Key-Id", "value": "your-access-key"},
+        {"key": "S3-Secret-Access-Key", "value": "your-secret-key"},
+        {"key": "S3-Buckets", "value": "bucket1,bucket2"},
+        {"key": "S3-Force-Path-Style", "value": "true"}
+      ]
+    }
+  }
+}
+```
+
+**Supported Headers:**
+
+| Header                  | Description                                | Example                    |
+| ----------------------- | ------------------------------------------ | -------------------------- |
+| `S3-Region`             | AWS region                                 | `us-east-1`, `auto`        |
+| `S3-Endpoint`           | Custom endpoint (MinIO/R2/OSS)             | `https://xxx.r2.cloud...`  |
+| `S3-Access-Key-Id`      | Access key ID                              | `your-key-id`              |
+| `S3-Secret-Access-Key`  | Secret access key                          | `your-secret-key`          |
+| `S3-Buckets`            | Allowed buckets (comma-separated)          | `bucket1,bucket2`          |
+| `S3-Force-Path-Style`   | Force path-style URLs                      | `true` or `false`          |
+
+📖 See [CONFIGURATION_GUIDE.md](./CONFIGURATION_GUIDE.md) for detailed configuration examples.
+
+### 2. Environment Variables Configuration (Fallback)
+
+If HTTP headers are not provided, the server will use environment variables:
 
 | Variable                | Description                                       | Default           |
 | ----------------------- | ------------------------------------------------- | ----------------- |
@@ -564,12 +608,54 @@ It could be JSON, TXT, CSV or other text-based formats.
 Binary content (image/jpeg): base64 data is /9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof...
 ```
 
+### put-object
+
+Uploads an object to a specified S3 bucket. Supports both text and binary content with automatic content type detection.
+
+**Parameters:**
+
+- `bucket` (required): Name of the S3 bucket
+- `key` (required): Key (path) of the object to upload
+- `content` (required): Content of the object to upload (text or base64-encoded binary)
+- `contentType` (optional): MIME type of the content (auto-detected from file extension if not provided)
+- `encoding` (optional): Encoding of the content - `text` (default) or `base64` for binary data
+
+**Example text upload:**
+
+```json
+{
+  "bucket": "my-bucket",
+  "key": "documents/hello.txt",
+  "content": "Hello World!",
+  "encoding": "text"
+}
+```
+
+**Example binary upload:**
+
+```json
+{
+  "bucket": "my-bucket",
+  "key": "images/photo.jpg",
+  "content": "/9j/4AAQSkZJRgABAQEAYABgAAD...",
+  "contentType": "image/jpeg",
+  "encoding": "base64"
+}
+```
+
+**Success response:**
+
+```
+Successfully uploaded documents/hello.txt to bucket my-bucket
+```
+
 ## Security Considerations
 
 - The server will only access buckets specified in the `S3_BUCKETS` environment variable
-- AWS credentials must have appropriate permissions to the buckets
+- AWS credentials must have appropriate permissions to the buckets (including `s3:PutObject` for uploads)
 - Use the principle of least privilege when configuring AWS permissions
 - For production use, consider using IAM roles with specific S3 permissions
+- Binary file uploads use base64 encoding - ensure content size is within MCP protocol limits
 
 ## Usage with Claude
 
@@ -578,6 +664,8 @@ When interacting with Claude in the desktop app, you can ask it to perform S3 op
 - "List all my S3 buckets"
 - "Summarize PDF files in my-documents-bucket"
 - "Get the README.txt file from my-documents-bucket"
+- "Upload this text to my-bucket as notes.txt"
+- "Create a JSON file in my-bucket with this configuration data"
 
 Claude will use the appropriate MCP tool to carry out the request and show you the results.
 

@@ -3,6 +3,7 @@ import type { IMCPTool } from "../types.js";
 import { GetObjectTool } from "./getObject.js";
 import { ListBucketsTool } from "./listBuckets.js";
 import { ListObjectsTool } from "./listObjects.js";
+import { PutObjectTool } from "./putObject.js";
 
 /**
  * Create all tool instances
@@ -14,8 +15,9 @@ export function createTools(s3Resource: S3Resource): IMCPTool[] {
     new ListBucketsTool(s3Resource),
     new ListObjectsTool(s3Resource),
     new GetObjectTool(s3Resource),
+    new PutObjectTool(s3Resource),
   ];
 }
 
 // Export all tool classes
-export { ListBucketsTool, ListObjectsTool, GetObjectTool };
+export { ListBucketsTool, ListObjectsTool, GetObjectTool, PutObjectTool };
